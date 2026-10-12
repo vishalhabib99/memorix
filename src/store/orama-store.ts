@@ -26,6 +26,7 @@ import { maybeExpandSearchQuery } from '../search/query-expansion.js';
 import { parseRerankTimeoutMs, shouldAttemptHttpRerank, shouldAttemptLlmRerank } from '../rerank/policy.js';
 import { withTimeout, withTimeoutSignal } from '../timeout.js';
 import { getObservationStore } from './obs-store.js';
+import { containsCjk, createOramaTokenizer } from './orama-tokenizer.js';
 import {
   createSemanticIndexProfile,
   searchSemanticVectors,
@@ -417,7 +418,8 @@ async function initializeDb(
     ? { ...baseSchema, embedding: `vector[${dims}]` as const }
     : baseSchema;
 
-  const nextDb = await create({ schema });
+  // Custom tokenizer so CJK text is searchable; Latin tokens match the default.
+  const nextDb = await create({ schema, components: { tokenizer: createOramaTokenizer() } });
 
   // resetDb() may have started a new lifecycle while the provider was loading.
   // Discard this obsolete instance rather than letting it overwrite the new one.
@@ -902,7 +904,11 @@ export async function searchObservations(options: SearchOptions): Promise<IndexE
     // Fuzzy tolerance: allow 1-char typos for short queries, 2 for longer
     // Fuzzy matching is useful for ordinary recall, but grows sharply with
     // corpus size. The fast profile deliberately uses exact lexical matching.
-    ...(hasQuery && quality !== 'fast' ? { tolerance: originalQuery!.length > 6 ? 2 : 1 } : {}),
+    // CJK queries are matched as character bigrams, where an edit distance of
+    // 1-2 would match unrelated bigrams, so they skip fuzzy matching too.
+    ...(hasQuery && quality !== 'fast' && !containsCjk(originalQuery!)
+      ? { tolerance: originalQuery!.length > 6 ? 2 : 1 }
+      : {}),
   };
 
   // If embedding provider is available and query tier warrants it, use hybrid search
